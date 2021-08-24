@@ -181,6 +181,8 @@ void do_send(osjob_t* j){
             Serial.print("RPM: "); Serial.println(rpm);
             kph = (uint32_t)veloci;
             Serial.print("Velocidade: "); Serial.print(kph); Serial.println("Km/h");
+            payload[2] = rpm;
+            payload[3] = kph;
          }
          else
             myELM327.printError();
@@ -199,16 +201,16 @@ void OBDConnect(){
   ELM_PORT.begin("EspOBD", true);
 
   if (!ELM_PORT.connect(BTMAC))
-  //WWWWW                                         if (!ELM_PORT.connect("OBDII"))
+  //if (!ELM_PORT.connect("OBDII"))
   {
     DEBUG_PORT.println("Couldn't connect to OBD scanner - Phase 1");
-    while(1);
+    //while(1);
   }
 
   if (!myELM327.begin(ELM_PORT, true, 2000))
   {
     Serial.println("Couldn't connect to OBD scanner - Phase 2");
-    while (1);
+   // while (1);
   }
 
   Serial.println("Connected to ELM327");
@@ -244,7 +246,15 @@ void setup() {
     }
 
     // We'll only enable Channel 16 (905.5Mhz) since we're transmitting on a single-channel
-    LMIC_enableChannel(16);
+    LMIC_enableChannel(0);
+    LMIC_enableChannel(1);
+    LMIC_enableChannel(2);
+    LMIC_enableChannel(3);
+    LMIC_enableChannel(4);
+    LMIC_enableChannel(5);
+    LMIC_enableChannel(6);
+    LMIC_enableChannel(7);
+    LMIC_enableChannel(8);
 
     // Disable link check validation
     LMIC_setLinkCheckMode(0);
