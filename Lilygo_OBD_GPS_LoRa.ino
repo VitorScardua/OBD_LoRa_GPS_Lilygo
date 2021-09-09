@@ -41,6 +41,8 @@ uint8_t BTMAC[6] = {0x7D, 0xE6, 0x95, 0x19, 0xD1, 0xA2};
 uint32_t rpm = 0;
 uint32_t kph = 0;
 
+uint8_t payload[10];
+
 //Flag para enviar msg LoRa somente se GPS e OBD2 estiverem conectados
 int flagGPS=0;
 int flagOBD=0;
@@ -197,42 +199,20 @@ void onEvent (ev_t ev) {
  * Função para envio de Pacote LoRa
  */
 void do_send(osjob_t* j){
-      Serial.print("Payload: ");
-      int x = 0;
-      while (x < sizeof(tx_payload)) {
-        printHex2(tx_payload[x]);
-        Serial.print(" ");
-        x++;
-      }
-      Serial.println();
     // Check if there is not a current TX/RX job running
     if (LMIC.opmode & OP_TXRXPEND) {
         Serial.println(F("OP_TXRXPEND, not sending"));
     } else {
-      Serial.print("Payload: ");
-      int x = 0;
-      while (x < sizeof(tx_payload)) {
-        printHex2(tx_payload[x]);
-        Serial.print(" ");
-        x++;
-      }
-      Serial.println();
+      Serial.println("Enviando Payload...");
 
       // prepare upstream data transmission at the next possible time.
       // transmit on port 13 (the first parameter); you can use any value from 1 to 223 (others are reserved).
       // request an ack (the last parameter, if not zero, requests an ack from the network).
       // Remember, acks consume a lot of network resources; don't ask for an ack unless you really need it.
-      LMIC_setTxData2(13, tx_payload, sizeof(tx_payload)-1, 1);
+      LMIC_setTxData2(13, payload, sizeof(payload)-1, 1);
     }
 }
 
-
-void printHex2(unsigned v) {
-  v &= 0xff;
-  if (v < 16)
-    Serial.print('0');
-  Serial.print(v, HEX);
-}
 
 /*
  * Função para conectar ao OBD2 via bluetooth
@@ -334,16 +314,6 @@ void loop() {
     Serial1.println();
   }
   if (read_sentence.startsWith("$GPGGA")) {
-//    String gps_lat = sentence_sep(read_sentence, 2); //Latitude in degrees & minutes
-//    String gps_lon = sentence_sep(read_sentence, 4); //Longitude in degrees & minutes
-//    String gps_sat = sentence_sep(read_sentence, 7);
-//    String gps_hgt = sentence_sep(read_sentence, 9);
-//    String gps_lat_o = sentence_sep(read_sentence, 3);  //Orientation (N or S)
-//    String gps_lon_o = sentence_sep(read_sentence, 5); //Orientation (E or W)
-//
-//    float latitude = convert_gps_coord(gps_lat.toFloat(), gps_lat_o);
-//    float longitude = convert_gps_coord(gps_lon.toFloat(), gps_lon_o);
-//    float alt = gps_hgt.toFloat();
 
       Serial.print("Latitude  : ");
       Serial.println(gps.location.lat(), 6);
@@ -354,7 +324,7 @@ void loop() {
       Serial.print("Satellites: ");
       Serial.println(gps.satellites.value());
   
-      gps_payload(gps.location.lat(), gps.location.lng(), gps.altitude.feet());
+      gps_payload(gps.location.lat(), gps.location.lng(), (gps.altitude.feet()/3.2808));
       flagGPS = 0;
       Serial.println("GPS Conectado");
     }
@@ -398,30 +368,34 @@ void loop() {
  * GPS em pacotes do payload LoRa
  */
 void gps_payload(double lat, double lon, int alt) {
-  int32_t LatitudeBinary = (lat  * 1000000);
-  int32_t LongitudeBinary = (lon  * 1000000);
-  int32_t altitu = alt * 100;
+  uint32_t LatitudeBinary = 0;
+  uint32_t LongitudeBinary = 0;
 
-  int8_t payload[7];
-  
-  payload[0] = LatitudeBinary >> 16;
-  payload[1] = LatitudeBinary >> 8;
-  payload[2] = LatitudeBinary;
-  
-  payload[3] = LongitudeBinary >> 16;
-  payload[4] = LongitudeBinary >> 8;
-  payload[5] = LongitudeBinary & 0xFF;
-
-  payload[6] = altitu >> 8;
-  payload[7] = altitu;
-
-  int i = 0;
-  while (i < sizeof(payload)) {
-    tx_payload[i] = payload[i];
-    i++;
+  if (lat != 0){
+    LatitudeBinary = (lat  * 10000);
+    LongitudeBinary = (lon  * 10000);
+    alt = alt * 100;
   }
 
-}
+  payload[0] = LatitudeBinary >> 24 ;
+  payload[1] = LatitudeBinary >> 16;
+  payload[2] = LatitudeBinary >> 8;
+  payload[3] = LatitudeBinary;
+
+  payload[4] = LongitudeBinary >> 24;
+  payload[5] = LongitudeBinary >> 16;
+  payload[6] = LongitudeBinary >> 8;
+  payload[7] = LongitudeBinary;
+
+  payload[8] = alt >> 8;
+  payload[9] = alt;
+
+  int x = 0;
+  for (x=0; x <=10; x++){
+    Serial.print(payload[x], HEX);
+  }
+  Serial.println(" ");
+  }
 
 /*
  * Função para alocação das informações do 
@@ -429,106 +403,4 @@ void gps_payload(double lat, double lon, int alt) {
  */
 void obd_payload(int kmh) {
   tx_payload[8] = kmh;
-}
-
-/*
- * Função para leitura do GPS
- */
-String sentence_sep(String input, int index) {
-  int finder = 0;
-  int strIndex[] = { 0, -1 };
-  int maxIndex = input.length() - 1;
-
-  for (int i = 0; i <= maxIndex && finder <= index; i++) {
-    if (input.charAt(i) == ',' || i == maxIndex) {  //',' = separator
-      finder++;
-      strIndex[0] = strIndex[1] + 1;
-      strIndex[1] = (i == maxIndex) ? i + 1 : i;
-    }
-  }
-  return finder > index ? input.substring(strIndex[0], strIndex[1]) : "";
-}
-
-/*
- * Função que converte coordenadas GPS para graus
- */
-float convert_gps_coord(float deg_min, String orientation) {
-  double gps_min = fmod((double)deg_min, 100.0);
-  int gps_deg = deg_min / 100;
-  double dec_deg = gps_deg + ( gps_min / 60 );
-  if (orientation == "W" || orientation == "S") {
-    dec_deg = 0 - dec_deg;
-  }
-  return dec_deg;
-}
-
-float convert2Degrees(char* input, char indicator)
-{
-  // final latitude expresed in degrees
-  float degrees;
-  float minutes;
-
-  //auxiliar variable
-  char aux[10] ="";
-
-  // check if 'indicator' is a valid input
-  if ( indicator != 'N' && indicator != 'S' && indicator != 'E' && indicator != 'W' )
-  {
-    // invalid indicator
-    return 0;
-  }
-
-  // get 'degrees' from input parameter
-  if ( indicator=='N' || indicator=='S' )
-  {
-    //latitude format: DDmm.mmmm'
-    aux[0] = input[0];
-    aux[1] = input[1];
-    aux[2] = '\0';
-  }
-  else if( indicator == 'E' || indicator == 'W')
-  {
-    //longitude format: DDDmm.mmmm'
-    aux[0]=input[0];
-    aux[1]=input[1];
-    aux[2]=input[2];
-    aux[3]='\0';
-  }
-
-  // convert string to integer and add it to final float variable
-  degrees = atoi(aux);
-
-  // get 'minutes' from input parameter
-  if ( indicator == 'N' || indicator == 'S' )
-  {
-    //latitude format: DDmm.mmmm'
-    for ( int i=0; i<7; i++ )
-    {
-      aux[i] = input[i+2];
-    }
-    aux[7] = '\0';
-  }
-  else if( indicator == 'E' || indicator == 'W')
-  {
-    //latitude format: DDmm.mmmm'
-    for ( int i = 0; i < 7; i++ )
-    {
-      aux[i] = input[i+3];
-    }
-    aux[7] = '\0';
-  }
-
-  // convert string to integer and add it to final float variable
-  minutes = atof(aux);
-
-  // add minutes to degrees
-  degrees = degrees+minutes/60;
-
-  // add sign: '+' for North/East; '-' for South/West
-  if( indicator == 'S' || indicator == 'W')
-  {
-    degrees *= -1.0;
-  }
-
-  return degrees;
 }
