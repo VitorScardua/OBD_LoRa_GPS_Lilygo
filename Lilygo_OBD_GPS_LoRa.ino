@@ -3,6 +3,8 @@
 * após comunicação faz comunicação via LoRa para envio de informação para o
 * servidor.
 *******************************************************************************/
+// Bibliotecas utilizadas
+
 #include <lmic.h>
 #include <hal/hal.h>
 #include <SPI.h>
@@ -11,22 +13,7 @@
 #include <TinyGPS++.h>                       
 
 
-//
-// For normal use, we require that you edit the sketch to replace FILLMEIN
-// with values assigned by the TTN console. However, for regression tests,
-// we want to be able to compile these scripts. The regression tests define
-// COMPILE_REGRESSION_TEST, and in that case we define FILLMEIN to a non-
-// working but innocuous value.
-//
-#ifdef COMPILE_REGRESSION_TEST
-# define FILLMEIN 0
-#else
-# warning "You must replace the values marked FILLMEIN with real values from the TTN control panel!"
-# define FILLMEIN (#dont edit this, edit the lines that use FILLMEIN)
-#endif
-
-
-/*****
+/*
  * Configuração de variáveis para o bluetooth do OBD2
  */
 BluetoothSerial SerialBT;
@@ -41,12 +28,14 @@ uint8_t BTMAC[6] = {0x7D, 0xE6, 0x95, 0x19, 0xD1, 0xA2};
 uint32_t rpm = 0;
 uint32_t kph = 0;
 
-uint8_t payload[10];
 
-//Flag para enviar msg LoRa somente se GPS e OBD2 estiverem conectados
-int flagGPS=0;
+//Flag para enviar msg LoRa somente se OBD2 estiver conectado
 int flagOBD=0;
 int flag_TXCOMPLETE = 0;
+
+// Variáveis para GPS
+uint32_t LatitudeBinary = 0;
+uint32_t LongitudeBinary = 0;
 
 /*
  * Configuração de variáveis do GPS
@@ -82,8 +71,8 @@ void os_getArtEui (u1_t* buf) { }
 void os_getDevEui (u1_t* buf) { }
 void os_getDevKey (u1_t* buf) { }
 
-// payload to send to gateway
-static uint8_t tx_payload[9];
+// Variavel de função de envio de payload e variável do payload
+uint8_t payload[11];
 static osjob_t sendjob;
 
 // Schedule TX every this many seconds (might become longer due to duty
@@ -204,12 +193,18 @@ void do_send(osjob_t* j){
         Serial.println(F("OP_TXRXPEND, not sending"));
     } else {
       Serial.println("Enviando Payload...");
+      int x = 0;
+      for (x=0; x <=sizeof(payload); x++){
+        Serial.print(payload[x], HEX);
+      }
+      Serial.println(" ");
 
+      
       // prepare upstream data transmission at the next possible time.
       // transmit on port 13 (the first parameter); you can use any value from 1 to 223 (others are reserved).
       // request an ack (the last parameter, if not zero, requests an ack from the network).
       // Remember, acks consume a lot of network resources; don't ask for an ack unless you really need it.
-      LMIC_setTxData2(13, payload, sizeof(payload)-1, 1);
+      LMIC_setTxData2(13, payload, sizeof(payload), 1);
     }
 }
 
@@ -247,6 +242,7 @@ void setup() {
     delay(100);
     Serial.println(F("Starting"));
     Serial1.begin(9600, SERIAL_8N1, SERIAL1_RX, SERIAL1_TX);
+    
     //SPI pin mapping ESP32 (LILYGO Board V1.1)
     SPI.begin(5, 19, 27, 18);
 
@@ -292,12 +288,122 @@ void setup() {
 
     // Set data rate and transmit power for uplink
     LMIC_setDrTxpow(DR_SF7,14);
-
-    // Start job
-    //do_send(&sendjob);
 }
 
 /*
+ * Função de loop
+ */
+void loop() {
+
+  if(flagOBD == 1){
+    // Função para conexão com o OBD2
+    OBDConnect();
+  }
+  
+  if (Serial1.available()) {
+    Serial.write(Serial1.read());
+    Serial1.println();
+  }
+
+  // Verifica se o GPS foi conectado e espera para que seja conectado
+  while(!gps.location.isValid()){ // Variável do GPS = 1 quando GPS conectado
+    Serial.println("Tentando conectar GPS");
+    smartDelay(1000); // Função de Delay que verifica se o GPS está ligado
+  }
+
+  // Print de valores do GPS
+  Serial.print("Latitude  : ");
+  Serial.println(gps.location.lat(), 6);
+  Serial.print("Longitude : ");
+  Serial.println(gps.location.lng(), 6);
+  Serial.print("Altitude  : ");
+  Serial.println(gps.altitude.feet() / 32.808);
+  Serial.print("Satellites: ");
+  Serial.println(gps.satellites.value());
+
+  gps_payload(gps.location.lat(), gps.location.lng(), (gps.altitude.feet()/3.2808)); // Cria payload com os valores de GPS
+
+  // Verifica se a conecção bluetooth com o OBD2 está conectado
+  if (myELM327.status == ELM_SUCCESS)
+   {
+      float veloci = myELM327.kph(); // Valor de velocidade do sensor OBD2
+      kph = (uint32_t)veloci;
+      Serial.print("Velocidade: "); Serial.print(kph); Serial.println("Km/h");
+      obd_payload(kph); // Cria payload com valor de velocidade
+      flagOBD = 0;
+   }
+   else{
+      myELM327.printError();
+      flagOBD = 1;
+  }
+  if(flagOBD == 0){
+    Serial.println("Enviei aqui mané");
+    do_send(&sendjob);
+    Serial.println("Sending...");
+    // Espera até que o payload seja enviado
+    while(flag_TXCOMPLETE == 0)
+    {
+      os_runloop_once();
+    }
+    flag_TXCOMPLETE = 0;
+  }
+  delay(1000);
+}
+
+/*
+ * Função que gera um delay e faz verificação verificação
+ * se o GPS está conectado. Função utilizada para o loop até
+ * o GPS se conecte, em outros casos utilizar a função delay normal.
+ */
+static void smartDelay(unsigned long ms)                
+{
+  unsigned long start = millis();
+  do
+  {
+    while (Serial1.available())
+      gps.encode(Serial1.read());
+  } while (millis() - start < ms);
+}
+
+/*
+ * Função para alocação das informações do 
+ * GPS em pacotes do payload LoRa
+ */
+void gps_payload(double lat, double lon, int alt) {
+  
+  if (lat != 0){
+    LatitudeBinary = (lat  * 10000);
+    LongitudeBinary = (lon  * 10000);
+    alt = alt * 100;
+  }
+
+  payload[0] = (LatitudeBinary & 0xFF000000) >> 24 ;
+  payload[1] = (LatitudeBinary & 0x00FF0000) >> 16;
+  payload[2] = (LatitudeBinary & 0x0000FF00) >> 8;
+  payload[3] = (LatitudeBinary & 0x000000FF);
+
+  payload[4] = (LongitudeBinary & 0xFF000000) >> 24;
+  payload[5] = (LongitudeBinary & 0x00FF0000) >> 16;
+  payload[6] = (LongitudeBinary & 0x0000FF00) >> 8;
+  payload[7] = (LongitudeBinary & 0x000000FF);
+
+  payload[8] = (alt & 0xFF00) >> 8;
+  payload[9] = alt;
+
+  int x = 0;
+  for (x=0; x <= sizeof(payload)-1;x++){
+    Serial.print(payload[x], HEX);
+  }
+  Serial.println(" ");
+  }
+
+/*
+ * Função para alocação das informações do 
+ * OBD2 em pacotes do payload LoRa
+ */
+void obd_payload(int kmh) {
+  payload[10] = kmh;
+}
  * Função de loop
  */
 void loop() {
@@ -313,54 +419,62 @@ void loop() {
     Serial.write(Serial1.read());
     Serial1.println();
   }
-  if (read_sentence.startsWith("$GPGGA")) {
 
-      Serial.print("Latitude  : ");
-      Serial.println(gps.location.lat(), 6);
-      Serial.print("Longitude : ");
-      Serial.println(gps.location.lng(), 6);
-      Serial.print("Altitude  : ");
-      Serial.println(gps.altitude.feet() / 3.2808);
-      Serial.print("Satellites: ");
-      Serial.println(gps.satellites.value());
-  
-      gps_payload(gps.location.lat(), gps.location.lng(), (gps.altitude.feet()/3.2808));
-      flagGPS = 0;
-      Serial.println("GPS Conectado");
+  while(!gps.location.isValid()){
+    Serial.println("Tentando conectar GPS");
+    smartDelay(1000);
+  }
+
+  Serial.print("Latitude  : ");
+  Serial.println(gps.location.lat(), 6);
+  Serial.print("Longitude : ");
+  Serial.println(gps.location.lng(), 6);
+  Serial.print("Altitude  : ");
+  Serial.println(gps.altitude.feet() / 32.808);
+  Serial.print("Satellites: ");
+  Serial.println(gps.satellites.value());
+
+  gps_payload(gps.location.lat(), gps.location.lng(), (gps.altitude.feet()/3.2808));
+      
+  if (myELM327.status == ELM_SUCCESS)
+   {
+      float veloci = myELM327.kph();
+      kph = (uint32_t)veloci;
+      Serial.print("Velocidade: "); Serial.print(kph); Serial.println("Km/h");
+      obd_payload(kph);
+      flagOBD = 0;
+   }
+   else{
+      myELM327.printError();
+      flagOBD = 1;
+  }
+  if(flagOBD == 0){
+    Serial.println("Enviei aqui mané");
+    do_send(&sendjob);
+    Serial.println("Sending...");
+    //Run LMIC loop until he as finish
+    while(flag_TXCOMPLETE == 0)
+    {
+      os_runloop_once();
     }
-    else{
-      Serial.println("GPS Não Conectado");
-      flagGPS = 1;
-    }
-        
-    if (myELM327.status == ELM_SUCCESS)
-     {
-        float tempRPM = myELM327.rpm();
-        float veloci = myELM327.kph();
-        rpm = (uint32_t)tempRPM;
-        Serial.print("RPM: "); Serial.println(rpm);
-        kph = (uint32_t)veloci;
-        Serial.print("Velocidade: "); Serial.print(kph); Serial.println("Km/h");
-        obd_payload(kph);
-        flagOBD = 0;
-     }
-     else{
-        myELM327.printError();
-        //tx_payload[10] = 24;
-        flagOBD = 1;
-    }
-    if(flagOBD == 0){
-      Serial.println("Enviei aqui mané");
-      do_send(&sendjob);
-      Serial.println("Sending...");
-      //Run LMIC loop until he as finish
-      while(flag_TXCOMPLETE == 0  )
-      {
-        os_runloop_once();
-      }
-      flag_TXCOMPLETE = 0;
-    }
-    delay(10000);
+    flag_TXCOMPLETE = 0;
+  }
+  delay(1000);
+}
+
+/*
+ * Função que gera um delay e faz verificação verificação
+ * se o GPS está conectado. Função utilizada para o loop até
+ * o GPS se conecte, em outros casos utilizar a função delay normal.
+ */
+static void smartDelay(unsigned long ms)                
+{
+  unsigned long start = millis();
+  do
+  {
+    while (Serial1.available())
+      gps.encode(Serial1.read());
+  } while (millis() - start < ms);
 }
 
 /*
@@ -368,30 +482,28 @@ void loop() {
  * GPS em pacotes do payload LoRa
  */
 void gps_payload(double lat, double lon, int alt) {
-  uint32_t LatitudeBinary = 0;
-  uint32_t LongitudeBinary = 0;
-
+  
   if (lat != 0){
     LatitudeBinary = (lat  * 10000);
     LongitudeBinary = (lon  * 10000);
     alt = alt * 100;
   }
 
-  payload[0] = LatitudeBinary >> 24 ;
-  payload[1] = LatitudeBinary >> 16;
-  payload[2] = LatitudeBinary >> 8;
-  payload[3] = LatitudeBinary;
+  payload[0] = (LatitudeBinary & 0xFF000000) >> 24 ;
+  payload[1] = (LatitudeBinary & 0x00FF0000) >> 16;
+  payload[2] = (LatitudeBinary & 0x0000FF00) >> 8;
+  payload[3] = (LatitudeBinary & 0x000000FF);
 
-  payload[4] = LongitudeBinary >> 24;
-  payload[5] = LongitudeBinary >> 16;
-  payload[6] = LongitudeBinary >> 8;
-  payload[7] = LongitudeBinary;
+  payload[4] = (LongitudeBinary & 0xFF000000) >> 24;
+  payload[5] = (LongitudeBinary & 0x00FF0000) >> 16;
+  payload[6] = (LongitudeBinary & 0x0000FF00) >> 8;
+  payload[7] = (LongitudeBinary & 0x000000FF);
 
-  payload[8] = alt >> 8;
+  payload[8] = (alt & 0xFF00) >> 8;
   payload[9] = alt;
 
   int x = 0;
-  for (x=0; x <=10; x++){
+  for (x=0; x <= sizeof(payload)-1;x++){
     Serial.print(payload[x], HEX);
   }
   Serial.println(" ");
@@ -402,5 +514,5 @@ void gps_payload(double lat, double lon, int alt) {
  * OBD2 em pacotes do payload LoRa
  */
 void obd_payload(int kmh) {
-  tx_payload[8] = kmh;
+  payload[10] = kmh;
 }
