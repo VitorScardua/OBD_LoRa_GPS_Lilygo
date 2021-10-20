@@ -45,7 +45,6 @@ uint32_t LongitudeBinary = 0;
  */
 #define SERIAL1_RX 34 // GPS_TX -> 34
 #define SERIAL1_TX 12 // 12 -> GPS_RX
-String read_sentence;
 
 
 /*
