@@ -2,6 +2,9 @@
 * Código do lilygo para comunicação com o OBD2 via bluetooth e capta os dados
 * após comunicação faz comunicação via LoRa para envio de informação para o
 * servidor.
+* Dados Captados:
+* - GPS
+* -Velocidade do veículo via OBD2
 *******************************************************************************/
 // Bibliotecas utilizadas
 
